@@ -17,27 +17,12 @@ from stable_baselines.bench import Monitor
 from stable_baselines.results_plotter import load_results, ts2xy
 import xml.etree.ElementTree as ET
 
-
-n_counter = 0
-worker_best_mean_reward = 0
-old_counter = 0
-model_name = ''
+best_mean_reward, n_steps = -np.inf, 0
+best_mean_reward = 0
 gif_dir = ''
-env_name = 'Real-v0'
-worker_total_steps = 50000
-if worker_total_steps >= 1000000:
-    n_gifs = 5
-else:
-    n_gifs = 2
-log_incs = np.round(
-    (worker_total_steps / n_gifs) * 60 / 60000)
 models_tmp_dir = ''
-total_gif_time = 0
 log_dir = ''
-w_model = 0
-worker_steps = 0
-episode = 0
-n_step = 0
+mean_reward = 0
 
 
 def moving_average(values, window):
@@ -65,7 +50,7 @@ def plot_results(log_folder, model_name, plt_dir, title='Learning Curve'):
 
     x, y = ts2xy(load_results(log_folder), 'timesteps')
     shutil.copy(old_file_name, new_file_name)
-    y = moving_average(y, window=50)
+    y = moving_average(y, window=10)
     # Truncate x
     x = x[len(x) - len(y):]
 
@@ -84,24 +69,28 @@ def plot_results(log_folder, model_name, plt_dir, title='Learning Curve'):
 class CLEnv(gym.Env):
 
     def __init__(self):
-        global gif_dir, env_name, models_tmp_dir, log_dir
+        global models_tmp_dir, log_dir
+        self.env_name = 'Real-v0'
+        self.total_timesteps = 100000
+
         self.save_path = ''
 
         self.xml_path = os.path.join(
             gym_real.__path__[0], "envs/assets/real.xml")
-        self.w_models_dir = os.path.join(self.save_path, "models/")
-        self.w_models_tmp_dir = os.path.join(self.save_path, "models_tmp/")
-        models_tmp_dir = self.w_models_tmp_dir
+        self.models_dir = os.path.join(self.save_path, "models/")
+        self.models_tmp_dir = os.path.join(self.save_path, "models_tmp/")
+        models_tmp_dir = self.models_tmp_dir
         self.log_dir = os.path.join(self.save_path, "tmp")
         log_dir = self.log_dir
         self.gif_dir = os.path.join(self.save_path, "tmp_gif/")
-        gif_dir = self.gif_dir
         self.plt_dir = os.path.join(self.save_path, "plot")
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.gif_dir, exist_ok=True)
-        os.makedirs(self.w_models_dir, exist_ok=True)
-        os.makedirs(self.w_models_tmp_dir, exist_ok=True)
+        os.makedirs(self.models_dir, exist_ok=True)
+        os.makedirs(self.models_tmp_dir, exist_ok=True)
         os.makedirs(self.plt_dir, exist_ok=True)
+
+        self.total_gif_time = 0
 
         self.step_n = 0
         self.worker_n = 0
@@ -111,60 +100,70 @@ class CLEnv(gym.Env):
         self.action_low = -1.0
 
         self.alter_leg(self.action_high)
-        self.n_cpu = 8
-        self.w_model = self.worker_maintainer(init=True)
-        self.initial_obs = self.get_state(self.w_model)
+        self.n_cpu = 20
+        model, model_name, self.prev_model_loc, env = self.worker_maintainer(init=True)
+        model.save(self.prev_model_loc)
+        self.initial_obs = self.get_state(model)
         self.ob_len = len(self.initial_obs)
         self.observation_space = Box(
             low=-np.inf, high=np.inf, shape=(self.ob_len,), dtype=np.float32)
         self.action_space = Box(low=-1.0, high=-0.1,
                                 shape=(1,), dtype=np.float32)
 
+        env.close()
+        del env, model
+
     def step(self, action):
-        global worker_best_mean_reward, worker_total_steps, model_name, w_model, worker_steps, episode, n_step
+        global best_mean_reward, mean_reward
 
         self.step_n += 1
-        n_step = self.step_n
         self.alter_leg(action[0])
-        self.w_model = self.worker_maintainer()
-        w_model = self.w_model
-        self.w_model.learn(total_timesteps=worker_total_steps,
-                           callback=self.callback)
-        self.w_model_name = self.epi_dir + '_' + "Worker_" + \
-            str(self.step_n) + '_' + str(action[0]) + "_" + \
-            str(worker_total_steps) + "_" + self.stamp
-        model_name = self.w_model_name
-        self.w_model.save(self.w_model_loc)
+        model, model_name, model_loc, env = self.worker_maintainer(action=action[0])
+        model.learn(total_timesteps=self.total_timesteps,
+                    callback=self.callback)
+        model.save(model_loc)
+        self.prev_model_loc = model_loc
 
-        plot_results(self.log_dir, self.w_model_name, self.plt_dir)
+        plot_results(self.log_dir, model_name, self.plt_dir)
 
-        observation = self.get_state(self.w_model)
-        reward = 1 / (worker_steps)
-        if worker_best_mean_reward > 300:
+        step_count = self.make_me_a_gif(model, model_name)
+
+        observation = self.get_state(model)
+        reward = 1 / step_count
+        print('STEP COUNT:', step_count)
+        print('PROF REWARD', reward)
+        print('MEAN REWARD', mean_reward)
+        if mean_reward > 300:
             done = True
             self.episode += 1
-            episode = self.episode
         else:
             done = False
 
         info = {}
 
-        del self.w_model
+        env.close()
+        del env, model
 
         return observation, reward, done, info
 
     def render(self, mode='human'):
         while watch_agent == "y" or "Y":
             subprocess.Popen(
-                '''export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libGLEW.so:/usr/lib/nvidia-410/libGL.so; python load_agent.py '%s' '%s' ''' % (self.env_name, self.w_model_name), shell=True)
+                '''export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libGLEW.so:/usr/lib/nvidia-410/libGL.so; python load_agent.py '%s' '%s' ''' % (self.env_name, model_name), shell=True)
             watch_agent = input("Do you want to watch your sick gaits? (Y/n):")
 
     def reset(self):
         self.step_n = 0
         self.worker_n = 0
-        self.episode = 0
-        self.w_model = self.worker_maintainer(init=True)
-        observation = self.get_state(self.w_model)
+        model, _, model_loc, env = self.worker_maintainer(init=True)
+        if self.episode != 0:
+            self.prev_model_loc = model_loc
+            model.save(model_loc)
+        observation = self.get_state(model)
+        print('I GOT CALLED HOLY FUCK')
+
+        env.close()
+        del model, env
         return observation
 
     def flatten_policy(self, model_params):
@@ -194,31 +193,30 @@ class CLEnv(gym.Env):
 
         tree.write(self.xml_path)
 
-    def worker_maintainer(self, init=False):
+    def worker_maintainer(self, init=False, action=None, prev_model_loc=None):
         global model_name
-        self.stamp = ' {:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())
-        self.epi_dir = 'Episode' + str(self.episode)
-        self.w_env = gym.make(env_name)
-        self.w_env = Monitor(
-            self.w_env, self.log_dir, allow_early_resets=True)
-        self.w_env = SubprocVecEnv(
-            [lambda: self.w_env for i in range(self.n_cpu)])
+        stamp = ' {:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())
+        epi_dir = 'Episode' + str(self.episode)
+        env = gym.make(self.env_name)
+        env = Monitor(
+            env, self.log_dir, allow_early_resets=True)
+        env = SubprocVecEnv(
+            [lambda: env for i in range(self.n_cpu)])
         if init:
-            self.w_model_name = self.epi_dir + '_' + "Worker_" + \
+            model_name = epi_dir + '_' + "Worker_" + \
                 str(self.step_n) + "_" + \
-                str(worker_total_steps) + "_" + self.stamp
-            self.w_model_loc = os.path.join(
-                self.w_models_dir, self.w_model_name)
-            model = PPO2(MlpPolicy, self.w_env, verbose=0)
-            model.save(self.w_model_loc)
+                str(self.total_timesteps) + "_" + stamp
+            model = PPO2(MlpPolicy, env, verbose=1)
         else:
-            model = PPO2.load(self.w_model_loc, env=self.w_env)
-            self.w_model_loc = os.path.join(
-                self.w_models_dir, self.w_model_name)
+            model_name = epi_dir + '_' + "Worker_" + \
+                str(self.step_n) + '_' + str(action) + "_" + \
+                str(self.total_timesteps) + "_" + stamp
+            model = PPO2.load(self.prev_model_loc, env=env)
 
-        model_name = self.w_model_name
-        print(model_name)
-        return model
+        model_loc = os.path.join(
+            self.models_dir, model_name)
+
+        return model, model_name, model_loc, env
 
     def callback(self, _locals, _globals):
         """
@@ -226,53 +224,56 @@ class CLEnv(gym.Env):
         :param _locals: (dict)
         :param _globals: (dict)
         """
-        global n_counter, worker_best_mean_reward, old_counter, model_name, gif_dir, env_name, log_incs, models_tmp_dir, total_gif_time, log_dir, w_model, worker_steps, worker_total_steps, n_step, episode
+        global n_steps, best_mean_reward, models_tmp_dir, log_dir, mean_reward
         # Print stats every 1000 calls
-
-        if abs(n_counter - old_counter) >= log_incs:
-            gif_start = time.time()
-            old_counter = n_counter
+        if (n_steps + 1) % 39 == 0:
             # Evaluate policy performance
             x, y = ts2xy(load_results(log_dir), 'timesteps')
             if len(x) > 0:
                 mean_reward = np.mean(y[-100:])
                 print(x[-1], 'timesteps')
-                worker_steps = x[-1]
                 print("Best mean reward: {:.2f} - Last mean reward per episode: {:.2f}".format(
-                    worker_best_mean_reward, mean_reward))
+                    best_mean_reward, mean_reward))
 
                 # New best model, you could save the agent here
-                if mean_reward > worker_best_mean_reward:
-                    worker_best_mean_reward = mean_reward
+                if mean_reward > best_mean_reward:
+                    best_mean_reward = mean_reward
                     # Example for saving best model
                     print("Saving new best model")
                     _locals['self'].save(models_tmp_dir + 'best_model.pkl')
 
-            stamp = ' {:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())
-            epi_dir = 'Episode' + str(episode)
-            model_name = epi_dir + '_' + "Worker_" + \
-                str(n_step) + "_" + str(worker_total_steps) + "_" + stamp
-            save_str = gif_dir + model_name + '.gif'
-            images = []
-
-            env_gif = gym.make(env_name)
-            obs = env_gif.reset()
-            img = env_gif.sim.render(
-                width=200, height=200, camera_name="isometric_view")
-            for _ in range(5000):
-                action, _ = w_model.predict(obs)
-                obs, _, _, _ = env_gif.step(action)
-                img = env_gif.sim.render(
-                    width=200, height=200, camera_name="isometric_view")
-                images.append(np.flipud(img))
-
-            print("creating gif...")
-            print("saving gif at:", save_str)
-            imageio.mimsave(save_str, [np.array(img)
-                                       for i, img in enumerate(images) if i % 2 == 0], fps=29)
-            print("gif created...")
-            gif_end = time.time()
-            total_gif_time += gif_end - gif_start
-        n_counter += 1
+        n_steps += 1
 
         return True
+
+    def make_me_a_gif(self, model, model_name):
+        gif_start = time.time()
+        save_str = self.gif_dir + model_name + '.gif'
+        images = []
+        temp_env = gym.make(self.env_name)
+        obs = temp_env.reset()
+        done = False
+        step = 0
+        img = temp_env.sim.render(
+            width=100, height=100, camera_name="isometric_view")
+        while not done:
+            action, _ = model.predict(obs)
+            obs, _, done, _ = temp_env.step(action)
+            img = temp_env.sim.render(
+                width=100, height=100, camera_name="isometric_view")
+            images.append(np.flipud(img))
+            step += 1
+
+        temp_env.close()
+        del temp_env
+        del model
+
+        print("creating gif...")
+        print("saving gif at:", save_str)
+        imageio.mimsave(save_str, [np.array(img)
+                                   for i, img in enumerate(images) if i % 2 == 0], fps=29)
+        print("gif created...")
+        gif_end = time.time()
+        self.total_gif_time += gif_end - gif_start
+
+        return step
