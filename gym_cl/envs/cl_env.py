@@ -4,6 +4,7 @@ import gym
 import gym_real
 import numpy as np
 import datetime
+import random
 import imageio
 import time
 import shutil
@@ -71,7 +72,7 @@ class CLEnv(gym.Env):
     def __init__(self):
         global models_tmp_dir, log_dir
         self.env_name = 'Real-v0'
-        self.total_timesteps = 100000
+        self.total_timesteps = 50000
 
         self.save_path = ''
 
@@ -96,29 +97,66 @@ class CLEnv(gym.Env):
         self.worker_n = 0
         self.episode = 0
 
-        self.action_high = -0.1
-        self.action_low = -1.0
+        # self.action_high = -0.1
+        # self.action_low = -1.0
 
-        self.alter_leg(self.action_high)
+        # self.alter_leg(self.action_high)
+
+        # model, model_name, self.prev_model_loc, env = self.worker_maintainer(
+        #     init=True)
+        # # model.save(self.prev_model_loc)
+        # self.initial_obs = self.get_state(model)
+        # self.ob_len = len(self.initial_obs)
+        # self.observation_space = Box(
+        #     low=-np.inf, high=np.inf, shape=(self.ob_len,), dtype=np.float32)
+        # self.action_space = Box(low=self.tall_leg, high=self.short_leg,
+        #                         shape=(1,), dtype=np.float32)
+
+        self.short_leg = -0.1
+        self.tall_leg = -1.0
+        self.alter_leg(3)
         self.n_cpu = 20
-        model, model_name, self.prev_model_loc, env = self.worker_maintainer(init=True)
-        model.save(self.prev_model_loc)
-        self.initial_obs = self.get_state(model)
-        self.ob_len = len(self.initial_obs)
-        self.observation_space = Box(
-            low=-np.inf, high=np.inf, shape=(self.ob_len,), dtype=np.float32)
-        self.action_space = Box(low=-1.0, high=-0.1,
-                                shape=(1,), dtype=np.float32)
+        self.leg_length = self.short_leg
+        self.old_length = self.leg_length
+        self.leg_change = 0.1
+        self.discrete_actions = [0, 1, 2]
+        self.action_space = Discrete(len(self.discrete_actions))
+        self.observation_space = Box(low=np.array([self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, -
+                                                   1.0, -np.inf]), high=np.array([self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf]))
+        model, model_name, self.prev_model_loc, env = self.worker_maintainer(
+            init=True)
+        self.initial_obs = []
+        self.prev_reward = 0
+        for i in range(11):
+            action = random.choice(self.discrete_actions)
+            self.alter_leg(action)
+            temp_env = gym.make(self.env_name)
+            model.learn(total_timesteps=self.total_timesteps)
+            w_obs = temp_env.reset()
+            w_done = False
+            w_reward = 0, 0
+            while not w_done:
+                w_action, _ = model.predict(w_obs)
+                w_obs, w_reward, w_done, _ = temp_env.step(w_action)
+            if i != 0:
+                self.initial_obs.append(self.leg_length)
+                self.initial_obs.append(w_reward - self.prev_reward)
+            self.prev_reward = w_reward
+            temp_env.close()
+            del temp_env
+        print('INIT OBSERVATION', self.initial_obs, len(self.initial_obs))
 
         env.close()
+        self.alter_leg(3)
+        self.prev_obs = self.initial_obs
         del env, model
 
     def step(self, action):
         global best_mean_reward, mean_reward
 
         self.step_n += 1
-        self.alter_leg(action[0])
-        model, model_name, model_loc, env = self.worker_maintainer(action=action[0])
+        self.alter_leg(action)
+        model, model_name, model_loc, env = self.worker_maintainer()
         model.learn(total_timesteps=self.total_timesteps,
                     callback=self.callback)
         model.save(model_loc)
@@ -126,14 +164,18 @@ class CLEnv(gym.Env):
 
         plot_results(self.log_dir, model_name, self.plt_dir)
 
-        step_count = self.make_me_a_gif(model, model_name)
+        w_reward = self.make_me_a_gif(model, model_name)
 
-        observation = self.get_state(model)
-        reward = 1 / step_count
-        print('STEP COUNT:', step_count)
+        observation = self.prev_obs[2:]
+        observation.append(self.leg_length)
+        observation.append(w_reward - self.prev_reward)
+        self.prev_obs = observation
+        print('OBSERVATION', observation, len(observation))
+        reward = w_reward * abs(action)
+        print('STEP COUNT:', w_reward)
         print('PROF REWARD', reward)
         print('MEAN REWARD', mean_reward)
-        if mean_reward > 300:
+        if mean_reward > 125:
             done = True
             self.episode += 1
         else:
@@ -159,8 +201,8 @@ class CLEnv(gym.Env):
         if self.episode != 0:
             self.prev_model_loc = model_loc
             model.save(model_loc)
-        observation = self.get_state(model)
-        print('I GOT CALLED HOLY FUCK')
+        observation = self.initial_obs
+        self.alter_leg(3)
 
         env.close()
         del model, env
@@ -182,18 +224,30 @@ class CLEnv(gym.Env):
         observation = self.flatten_policy(model.get_parameters())
         return observation
 
-    def alter_leg(self, leg_length):
+    def alter_leg(self, action):
+        if action == 0:
+            self.old_length = self.leg_length
+            if self.leg_length + self.leg_change < self.short_leg:
+                self.leg_length += self.leg_change
+        elif action == 1 and self.leg_length != self.tall_leg:
+            self.old_length = self.leg_length
+            if self.leg_length - self.leg_change > self.tall_leg:
+                self.leg_length -= self.leg_change
+        elif action == 3:
+            self.leg_length = self.short_leg
+            self.old_length = self.leg_length
+        print('LEGS', self.old_length, action, self.leg_length)
         tree = ET.parse(self.xml_path)
         root = tree.getroot()
         for geom in root.findall("worldbody/body/body/body/body/geom"):
-            geom.set("fromto", "0 0 0 0 0 " + str(leg_length))
+            geom.set("fromto", "0 0 0 0 0 " + str(self.leg_length))
 
         for pos in root.findall("worldbody/body/[@name='torso']"):
-            pos.set("pos", "0 0 " + str(abs(leg_length) + 0.7))
+            pos.set("pos", "0 0 " + str(abs(self.leg_length) + 0.7))
 
         tree.write(self.xml_path)
 
-    def worker_maintainer(self, init=False, action=None, prev_model_loc=None):
+    def worker_maintainer(self, init=False, prev_model_loc=None):
         global model_name
         stamp = ' {:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())
         epi_dir = 'Episode' + str(self.episode)
@@ -203,13 +257,17 @@ class CLEnv(gym.Env):
         env = SubprocVecEnv(
             [lambda: env for i in range(self.n_cpu)])
         if init:
-            model_name = epi_dir + '_' + "Worker_" + \
-                str(self.step_n) + "_" + \
-                str(self.total_timesteps) + "_" + stamp
-            model = PPO2(MlpPolicy, env, verbose=1)
+            # model_name = epi_dir + '_' + "Worker_" + \
+            #     str(self.step_n) + "_" + \
+            #     str(self.total_timesteps) + "_" + stamp
+            # model = PPO2(MlpPolicy, env, verbose=1)
+            model_name = "trained_init_student"
+            model_loc = os.path.join(
+                self.models_dir, model_name)
+            model = PPO2.load(model_loc, env=env)
         else:
             model_name = epi_dir + '_' + "Worker_" + \
-                str(self.step_n) + '_' + str(action) + "_" + \
+                str(self.step_n) + '_' + "{:.2f}".format(self.leg_length) + "_" + \
                 str(self.total_timesteps) + "_" + stamp
             model = PPO2.load(self.prev_model_loc, env=env)
 
@@ -253,12 +311,12 @@ class CLEnv(gym.Env):
         temp_env = gym.make(self.env_name)
         obs = temp_env.reset()
         done = False
-        step = 0
+        step, reward = 0, 0
         img = temp_env.sim.render(
             width=100, height=100, camera_name="isometric_view")
         while not done:
             action, _ = model.predict(obs)
-            obs, _, done, _ = temp_env.step(action)
+            obs, reward, done, _ = temp_env.step(action)
             img = temp_env.sim.render(
                 width=100, height=100, camera_name="isometric_view")
             images.append(np.flipud(img))
@@ -276,4 +334,4 @@ class CLEnv(gym.Env):
         gif_end = time.time()
         self.total_gif_time += gif_end - gif_start
 
-        return step
+        return reward
