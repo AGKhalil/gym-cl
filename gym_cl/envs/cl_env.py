@@ -236,6 +236,7 @@ class CLEnv(gym.Env):
             prev_w_reward = w_reward
             step_meter += 1
             print('IN THIS STEP I RAN', step_meter)
+            print('MY LEG LENGTH IS', self.leg_length)
             self.counter += 1
         self.plot_prog(self.prog_x, self.prog_y, self.divider)
 
