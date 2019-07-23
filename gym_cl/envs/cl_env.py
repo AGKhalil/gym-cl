@@ -68,26 +68,16 @@ def plot_results(log_folder, model_name, plt_dir, title='Learning Curve'):
     # plt.show()
 
 
-def plot_prof(data, plt_dir):
-    save_name = os.path.join(plt_dir, 'prof')
-    plt.plot(data)
-    plt.xlabel('Number of timesteps')
-    plt.ylabel('Rewards')
-    plt.title('Professor rewards')
-    plt.savefig(save_name + ".png")
-    plt.savefig(save_name + ".eps")
-
-
 class CLEnv(gym.Env):
 
-    def __init__(self):
+    def __init__(self, n_cpu, worker_total_timesteps, reset_timesteps, save_path, prof_name):
         global models_tmp_dir, log_dir
         self.env_name = 'Real-v0'
-        self.n_cpu = 20
-        self.total_timesteps = 100000
-        self.reset_timesteps = 10
-
-        self.save_path = ''
+        self.n_cpu = n_cpu
+        self.worker_total_timesteps = worker_total_timesteps
+        self.reset_timesteps = reset_timesteps
+        self.save_path = save_path
+        self.prof_name = prof_name
 
         self.all_x = []
         self.all_y = []
@@ -104,6 +94,7 @@ class CLEnv(gym.Env):
         self.models_tmp_dir = os.path.join(self.save_path, "models_tmp/")
         models_tmp_dir = self.models_tmp_dir
         self.log_dir = os.path.join(self.save_path, "tmp")
+        self.prof_log_dir = os.path.join(self.save_path, "prof/tmp")
         log_dir = self.log_dir
         self.gif_dir = os.path.join(self.save_path, "tmp_gif/")
         self.plt_dir = os.path.join(self.save_path, "plot")
@@ -114,9 +105,11 @@ class CLEnv(gym.Env):
         os.makedirs(self.plt_dir, exist_ok=True)
         stamp = ' {:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())
         self.legs_plt = os.path.join(
-            self.plt_dir, 'legs_' + stamp + "_" + str(self.total_timesteps))
+            self.plt_dir, 'legs_' + stamp + "_" + str(self.worker_total_timesteps))
         self.prog_plt = os.path.join(
-            self.plt_dir, 'prog_' + stamp + "_" + str(self.total_timesteps))
+            self.plt_dir, 'prog_' + stamp + "_" + str(self.worker_total_timesteps))
+        self.prof_plt = os.path.join(
+            self.plt_dir, 'prof_' + stamp + "_" + str(self.worker_total_timesteps))
 
         self.total_gif_time = 0
 
@@ -160,7 +153,7 @@ class CLEnv(gym.Env):
             action = random.choice(self.discrete_actions)
             self.alter_leg(action)
             temp_env = gym.make(self.env_name)
-            model.learn(total_timesteps=self.total_timesteps)
+            model.learn(total_timesteps=self.worker_total_timesteps)
             w_obs = temp_env.reset()
             w_done = False
             w_reward = 0, 0
@@ -186,16 +179,16 @@ class CLEnv(gym.Env):
 
         self.step_n += 1
         if self.step_n == self.reset_timesteps:
-        	self.alter_leg(4)
+            self.alter_leg(4)
         else:
-        	self.alter_leg(action)
+            self.alter_leg(action)
         w_done = False
         prev_w_reward = 0
         step_meter = 0
 
         while not w_done:
             model, model_name, model_loc, env = self.worker_maintainer()
-            model.learn(total_timesteps=self.total_timesteps,
+            model.learn(total_timesteps=self.worker_total_timesteps,
                         callback=self.callback)
             model.save(model_loc)
             self.prev_model_loc = model_loc
@@ -206,16 +199,16 @@ class CLEnv(gym.Env):
             y = moving_average(y, window=50)
             x = x[len(x) - len(y):]
             for i in x:
-            	if self.counter != 0:
-            		self.prog_x.append(i + self.vert_x[-1])
-            		appended_val = x[-1] + self.vert_x[-1]
-            	else:
-            		self.prog_x.append(i)
-            		appended_val = x[-1]
+                if self.counter != 0:
+                    self.prog_x.append(i + self.vert_x[-1])
+                    appended_val = x[-1] + self.vert_x[-1]
+                else:
+                    self.prog_x.append(i)
+                    appended_val = x[-1]
 
             self.vert_x.append(appended_val)
             for i in y:
-            	self.prog_y.append(i)
+                self.prog_y.append(i)
             os.remove(os.path.join(log_dir, "monitor.csv"))
 
             z = [self.leg_length for i in range(len(x))]
@@ -230,8 +223,8 @@ class CLEnv(gym.Env):
             w_reward = np.mean(y[-50:])
 
             if abs(w_reward - prev_w_reward) < self.delta:
-            	w_done = True
-            	self.divider.append(self.vert_x[-1])
+                w_done = True
+                self.divider.append(self.vert_x[-1])
 
             prev_w_reward = w_reward
             step_meter += 1
@@ -251,7 +244,7 @@ class CLEnv(gym.Env):
         print('STEP COUNT:', w_reward)
         print('PROF REWARD', reward)
         print('MEAN REWARD', mean_reward)
-        if mean_reward > 125 or self.step_n == self.reset_timesteps:
+        if self.step_n == self.reset_timesteps:
             done = True
             self.episode += 1
         else:
@@ -259,10 +252,15 @@ class CLEnv(gym.Env):
 
         info = {}
 
+        px, py = ts2xy(load_results(self.prof_log_dir), 'timesteps')
+        py = moving_average(py, window=10)
+        px = px[len(px) - len(py):]
+        self.plot_prof(px, py)
+
         return observation, reward, done, info
 
     def plot_legs(self, x, y, z):
-        fig = plt.figure('legs' + str(self.total_timesteps))
+        fig = plt.figure('legs' + str(self.worker_total_timesteps))
         ax = plt.axes(projection="3d")
         for i in range(len(x)):
             ax.plot3D(x[i], y[i], z[i])
@@ -277,16 +275,29 @@ class CLEnv(gym.Env):
         print("plots saved...")
 
     def plot_prog(self, x, y, vert):
-        fig = plt.figure('progress' + str(self.total_timesteps))
+        fig = plt.figure('progress' + str(self.worker_total_timesteps))
         plt.plot(x, y)
-        for i in vert:
-            plt.axvline(x=i, linestyle='--', color='#ccc5c6',
-                        label='leg increment')
+        # for i in vert:
+        #     plt.axvline(x=i, linestyle='--', color='#ccc5c6',
+        #                 label='leg increment')
         plt.xlabel('Number of Timesteps')
         plt.ylabel('Rewards')
         plt.title('Progress' + " Smoothed")
         plt.savefig(self.prog_plt + ".png")
         plt.savefig(self.prog_plt + ".eps")
+        print("plots saved...")
+
+    def plot_prof(self, x, y):
+        fig = plt.figure('professor')
+        plt.plot(x, y)
+        # for i in vert:
+        #     plt.axvline(x=i, linestyle='--', color='#ccc5c6',
+        #                 label='leg increment')
+        plt.xlabel('Number of Timesteps')
+        plt.ylabel('Rewards')
+        plt.title('Professor' + " Smoothed")
+        plt.savefig(self.prof_plt + ".png")
+        plt.savefig(self.prof_plt + ".eps")
         print("plots saved...")
 
     def render(self, mode='human'):
@@ -338,8 +349,8 @@ class CLEnv(gym.Env):
             self.leg_length = self.short_leg
             self.old_length = self.leg_length
         elif action == 4:
-        	self.leg_length = self.tall_leg
-        	self.old_length = self.leg_length
+            self.leg_length = self.tall_leg
+            self.old_length = self.leg_length
         print('LEGS', self.old_length, action, self.leg_length)
         tree = ET.parse(self.xml_path)
         root = tree.getroot()
@@ -362,11 +373,11 @@ class CLEnv(gym.Env):
             [lambda: env for i in range(self.n_cpu)])
         model_name = epi_dir + '_' + "Worker_" + \
             str(self.step_n) + '_' + "{:.2f}".format(self.leg_length) + "_" + \
-            str(self.total_timesteps) + "_" + stamp
+            str(self.worker_total_timesteps) + "_" + stamp
         if init:
             # model_name = epi_dir + '_' + "Worker_" + \
             #     str(self.step_n) + "_" + \
-            #     str(self.total_timesteps) + "_" + stamp
+            #     str(self.worker_total_timesteps) + "_" + stamp
             model = PPO2(MlpPolicy, env, verbose=1)
             # model_name = "trained_init_student"
             # model_loc = os.path.join(
