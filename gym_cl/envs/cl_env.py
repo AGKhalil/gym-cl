@@ -87,6 +87,10 @@ class CLEnv(gym.Env):
         self.prog_x = []
         self.prog_y = []
         self.delta = 3
+        self.px = []
+        self.py = []
+
+        self.steps_accum = 0
 
         self.xml_path = os.path.join(
             gym_real.__path__[0], "envs/assets/real.xml")
@@ -190,6 +194,7 @@ class CLEnv(gym.Env):
             model, model_name, model_loc, env = self.worker_maintainer()
             model.learn(total_timesteps=self.worker_total_timesteps,
                         callback=self.callback)
+            self.steps_accum += self.worker_total_timesteps
             model.save(model_loc)
             self.prev_model_loc = model_loc
             env.close()
@@ -238,7 +243,8 @@ class CLEnv(gym.Env):
         observation.append(w_reward - self.prev_reward)
         self.prev_obs = observation
         print('OBSERVATION', observation, len(observation))
-        reward = mean_reward * abs(self.leg_length)
+        # reward = mean_reward * abs(self.leg_length)
+        reward = 1 / self.steps_accum
         self.re_prof.append(reward)
         # plot_prof(self.re_prof, self.plt_dir)
         print('STEP COUNT:', w_reward)
@@ -252,10 +258,14 @@ class CLEnv(gym.Env):
 
         info = {}
 
-        px, py = ts2xy(load_results(self.prof_log_dir), 'timesteps')
-        py = moving_average(py, window=10)
-        px = px[len(px) - len(py):]
-        self.plot_prof(px, py)
+        # px, py = ts2xy(load_results(self.prof_log_dir), 'timesteps')
+        # px.append(self.n_)
+        self.py.append(reward)
+        self.plot_prof(self.py)
+        # if px and py:
+        # 	py = moving_average(py, window=10)
+        # 	px = px[len(px) - len(py):]
+        # 	self.plot_prof(px, py)
 
         return observation, reward, done, info
 
@@ -287,9 +297,10 @@ class CLEnv(gym.Env):
         plt.savefig(self.prog_plt + ".eps")
         print("plots saved...")
 
-    def plot_prof(self, x, y):
+    def plot_prof(self, y):
         fig = plt.figure('professor')
-        plt.plot(x, y)
+        # plt.plot(x, y)
+        plt.plot(y)
         # for i in vert:
         #     plt.axvline(x=i, linestyle='--', color='#ccc5c6',
         #                 label='leg increment')
@@ -309,6 +320,7 @@ class CLEnv(gym.Env):
     def reset(self):
         self.step_n = 0
         self.worker_n = 0
+        self.steps_accum = 0
         model, _, model_loc, env = self.worker_maintainer(init=True)
         if self.episode != 0:
             self.prev_model_loc = model_loc
