@@ -1,3 +1,11 @@
+"""An environment written for Automatic Curriculum Generation (ACG).
+
+Attributes:
+    gif_dir (str): directory for saving training gifs
+    log_dir (str): worker training data save directory
+    mean_reward (int): mean worker reward 
+    models_tmp_dir (str): temporary worker models save directory
+"""
 import sys
 import os
 import gym
@@ -20,7 +28,6 @@ from stable_baselines.results_plotter import load_results, ts2xy
 import xml.etree.ElementTree as ET
 
 best_mean_reward, n_steps = -np.inf, 0
-best_mean_reward = 0
 gif_dir = ''
 models_tmp_dir = ''
 log_dir = ''
@@ -30,47 +37,82 @@ mean_reward = 0
 def moving_average(values, window):
     """
     Smooth values by doing a moving average
-    :param values: (numpy array)
-    :param window: (int)
-    :return: (numpy array)
+    :param values: (numpy array) values to calculate average for
+    :param window: (int) range of values to include in mean
+    :return: (numpy array) the moving average
+
+    Args:
+        values (list): values to calculate average for
+        window (int): range of values to include in mean
+
+    Returns:
+        numpy array: the moving average
     """
     weights = np.repeat(1.0, window) / window
     return np.convolve(values, weights, 'valid')
 
 
-def plot_results(log_folder, model_name, plt_dir, title='Learning Curve'):
-    """
-    plot the results
-
-    :param log_folder: (str) the save location of the results to plot
-    :param title: (str) the title of the task to plot
-    """
-    m_name_csv = model_name + ".csv"
-    old_file_name = os.path.join(log_folder, "monitor.csv")
-    new_file_name = os.path.join(log_folder, m_name_csv)
-    save_name = os.path.join(plt_dir, model_name)
-
-    x, y = ts2xy(load_results(log_folder), 'timesteps')
-    shutil.copy(old_file_name, new_file_name)
-    y = moving_average(y, window=10)
-    # Truncate x
-    x = x[len(x) - len(y):]
-
-    fig = plt.figure(title)
-    plt.plot(x, y)
-    plt.xlabel('Number of Timesteps')
-    plt.ylabel('Rewards')
-    plt.title(title + " Smoothed")
-    print('Saving plot at:', save_name)
-    plt.savefig(save_name + ".png")
-    plt.savefig(save_name + ".eps")
-    print("plots saved...")
-    # plt.show()
-
-
 class CLEnv(gym.Env):
 
+    """Summary
+
+    Attributes:
+        action_space (Discrete): prof action space
+        all_x (list): worker training time steps
+        all_y (list): worker training reward
+        all_z (list): worker leg length
+        delta (int): worker convergence range for training
+        discrete_actions (list): list of possible discrete actions for prof
+        divider (list): stores worker time step at which prof took action
+        env_name (str): the worker environment name
+        episode (int): prof episode number
+        first_worker (bool): used to correctly concatenate results time steps
+        gif_dir (str): directory for saving training gifs
+        initial_obs (list): initial observation
+        leg_change (float): magnitude of leg changes
+        leg_length (float): worker leg length
+        legs_plt (str): save name for worker progress plot
+        log_dir (str): worker training data save directory
+        models_dir (str): worker models save directory
+        models_tmp_dir (str): temporary worker models save directory
+        n_cpu (int): number of cpus for running worker
+        observation_space (Box): prof observation space
+        old_length (float): previous leg length
+        plt_dir (str): plots save directory
+        prev_model_loc (str): previous model save name
+        prev_obs (list): previous step observation
+        prev_reward (int): previous worker step reward
+        prof_log_dir (str): prof training data save directory
+        prof_name (str): prof model save name
+        prof_plt (str): prof reward plot save name
+        prog_plt (str): training progress reward plot save name
+        prog_x (list): time steps for all worker training
+        prog_y (list): reward for all worker training
+        px (list): prof time steps
+        py (list): prof reward
+        reset_timesteps (int): max steps allowed per episode for prof 
+        save_path (str): path to parent directory in which all data will be saved
+        short_leg (float): shortest worker leg length
+        step_n (int): prof step counter
+        steps_accum (int): cumulative worker step counter. is reset each episode
+        tall_leg (float): longest worker leg length
+        total_gif_time (int): gif length in time steps
+        vert_x (list): keeps track of all worker cumulative time steps
+        worker_total_timesteps (int): total training time steps per worker
+        xml_path (str): path to real.xml in which the leg changes are modified
+
+    """
+
     def __init__(self, n_cpu, worker_total_timesteps, reset_timesteps, save_path, prof_name):
+        """Initialize worker environment, save paths, and initial observation.
+
+        Args:
+            n_cpu (int): amount of cpus for multiprocessing
+            worker_total_timesteps (int): total training time steps per worker
+            reset_timesteps (int): max steps allowed per episode for prof 
+            save_path (str): path to parent directory in which all data will be saved
+            prof_name (str): prof model save name
+        """
         global models_tmp_dir, log_dir
         self.env_name = 'Real-v0'
         self.n_cpu = n_cpu
@@ -117,11 +159,9 @@ class CLEnv(gym.Env):
 
         self.total_gif_time = 0
 
-        self.counter = 0
+        self.first_worker = False
         self.step_n = 0
-        self.worker_n = 0
         self.episode = 0
-        self.re_prof = []
 
         # self.action_high = -0.1
         # self.action_low = -1.0
@@ -145,7 +185,6 @@ class CLEnv(gym.Env):
         self.old_length = self.leg_length
         self.leg_change = 0.2
         self.discrete_actions = [0, 1, 2]
-        # self.discrete_actions = [1, 2]
         self.action_space = Discrete(len(self.discrete_actions))
         self.observation_space = Box(low=np.array([self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, self.tall_leg, -np.inf, -
                                                    1.0, -np.inf]), high=np.array([self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf, self.short_leg, np.inf]))
@@ -179,6 +218,17 @@ class CLEnv(gym.Env):
         del env, model
 
     def step(self, action):
+        """Takes a step in the ACG environment. A step is to modify the leg length and launch a new environment for a new worker to train in.
+
+        Args:
+            action (int): increment, decrement, or maintain current leg length.
+
+
+        Returns:
+            list, float, bool, dict: observation, reward, done, info
+
+
+        """
         global best_mean_reward, mean_reward
 
         self.step_n += 1
@@ -204,7 +254,7 @@ class CLEnv(gym.Env):
             y = moving_average(y, window=50)
             x = x[len(x) - len(y):]
             for i in x:
-                if self.counter != 0:
+                if not self.first_worker:
                     self.prog_x.append(i + self.vert_x[-1])
                     appended_val = x[-1] + self.vert_x[-1]
                 else:
@@ -235,7 +285,7 @@ class CLEnv(gym.Env):
             step_meter += 1
             print('IN THIS STEP I RAN', step_meter)
             print('MY LEG LENGTH IS', self.leg_length)
-            self.counter += 1
+            self.first_worker = True
         self.plot_prog(self.prog_x, self.prog_y, self.divider)
 
         observation = self.prev_obs[2:]
@@ -245,8 +295,6 @@ class CLEnv(gym.Env):
         print('OBSERVATION', observation, len(observation))
         # reward = mean_reward * abs(self.leg_length)
         reward = 1 / self.steps_accum
-        self.re_prof.append(reward)
-        # plot_prof(self.re_prof, self.plt_dir)
         print('STEP COUNT:', w_reward)
         print('PROF REWARD', reward)
         print('MEAN REWARD', mean_reward)
@@ -270,6 +318,13 @@ class CLEnv(gym.Env):
         return observation, reward, done, info
 
     def plot_legs(self, x, y, z):
+        """Plots rewards vs time steps vs leg length per worker instance
+
+        Args:
+            x (list): time steps
+            y (list): rewards
+            z (list): leg length
+        """
         fig = plt.figure('legs' + str(self.worker_total_timesteps))
         ax = plt.axes(projection="3d")
         for i in range(len(x)):
@@ -285,6 +340,13 @@ class CLEnv(gym.Env):
         print("plots saved...")
 
     def plot_prog(self, x, y, vert):
+        """Plots cumulative reward vs time steps for all worker training
+
+        Args:
+            x (list): time steps
+            y (list): reward
+            vert (list): time step at which prof takes action
+        """
         fig = plt.figure('progress' + str(self.worker_total_timesteps))
         plt.plot(x, y)
         # for i in vert:
@@ -298,6 +360,11 @@ class CLEnv(gym.Env):
         print("plots saved...")
 
     def plot_prof(self, y):
+        """Plots prof reward vs time steps
+
+        Args:
+            y (list): prof reward
+        """
         fig = plt.figure('professor')
         # plt.plot(x, y)
         plt.plot(y)
@@ -312,43 +379,40 @@ class CLEnv(gym.Env):
         print("plots saved...")
 
     def render(self, mode='human'):
+        """Renders an instance of the most recent worker.
+
+        Args:
+            mode (str, optional): rendering mode
+        """
         while watch_agent == "y" or "Y":
             subprocess.Popen(
                 '''export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libGLEW.so:/usr/lib/nvidia-410/libGL.so; python load_agent.py '%s' '%s' ''' % (self.env_name, model_name), shell=True)
             watch_agent = input("Do you want to watch your sick gaits? (Y/n):")
 
     def reset(self):
+        """Resets environment to initial state.
+
+        Returns:
+            list: initial observation
+        """
         self.step_n = 0
-        self.worker_n = 0
         self.steps_accum = 0
         model, _, model_loc, env = self.worker_maintainer(init=True)
         if self.episode != 0:
             self.prev_model_loc = model_loc
             model.save(model_loc)
-        observation = self.initial_obs
         self.alter_leg(3)
 
         env.close()
         del model, env
-        return observation
-
-    def flatten_policy(self, model_params):
-        params = dict(model_params)
-        list_of_params = []
-        for key, value in params.items():
-            list_of_params.append(value)
-        array_of_params = np.asarray(list_of_params)
-        flattened_params = array_of_params.flatten()
-        flat_lis = []
-        for i in range(len(flattened_params)):
-            flat_lis.append(flattened_params[i].flatten())
-        return np.concatenate(flat_lis)
-
-    def get_state(self, model):
-        observation = self.flatten_policy(model.get_parameters())
-        return observation
+        return self.initial_obs
 
     def alter_leg(self, action):
+        """Modifies leg length in xml file.
+
+        Args:
+            action (int): increment, decrement, or maintain current leg length.
+        """
         if action == 0:
             self.old_length = self.leg_length
             if self.leg_length + self.leg_change < self.short_leg:
@@ -375,6 +439,15 @@ class CLEnv(gym.Env):
         tree.write(self.xml_path)
 
     def worker_maintainer(self, init=False, prev_model_loc=None):
+        """Manages worker instances and their environments.
+
+        Args:
+            init (bool, optional): initial worker or no
+            prev_model_loc (None, optional): location of previous worker
+
+        Returns:
+            BaseRLModel, str, str, gym.env: model, model name, model save path, environment instance
+        """
         global model_name
         stamp = ' {:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())
         epi_dir = 'Episode' + str(self.episode)
@@ -408,6 +481,13 @@ class CLEnv(gym.Env):
         Callback called at each step (for DQN an others) or after n steps (see ACER or PPO2)
         :param _locals: (dict)
         :param _globals: (dict)
+
+        Args:
+            _locals (TYPE): local script variables
+            _globals (TYPE): global script variables
+
+        Returns:
+            bool: callback flag
         """
         global n_steps, best_mean_reward, models_tmp_dir, log_dir, mean_reward
         # Print stats every 1000 calls
@@ -432,6 +512,15 @@ class CLEnv(gym.Env):
         return True
 
     def make_me_a_gif(self, model, model_name):
+        """Creates a gif of a given worker instance.
+
+        Args:
+            model (BaseRLModel): worker instance
+            model_name (str): worker name
+
+        Returns:
+            TYPE: Description
+        """
         gif_start = time.time()
         save_str = self.gif_dir + model_name + '.gif'
         images = []
